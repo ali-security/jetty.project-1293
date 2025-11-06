@@ -15,6 +15,7 @@ package org.eclipse.jetty.ee10.servlet;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.InvalidPathException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -552,9 +553,18 @@ public class ResourceServlet extends HttpServlet
                 // otherwise we can use the core response directly.
                 boolean writingOrStreaming = servletContextResponse.isWritingOrStreaming();
                 boolean useServletResponse = !(httpServletResponse instanceof ServletApiResponse) || writingOrStreaming;
-                Response coreResponse = useServletResponse
+                Response r = useServletResponse
                     ? new ServletCoreResponse(coreRequest, httpServletResponse, included)
                     : servletChannel.getResponse();
+                // Ignore last writes done via the Core API as the ServletChannel will perform the last write upon completion.
+                Response coreResponse = new Response.Wrapper(coreRequest, r)
+                {
+                    @Override
+                    public void write(boolean last, ByteBuffer byteBuffer, Callback callback)
+                    {
+                        super.write(false, byteBuffer, callback);
+                    }
+                };
 
                 // If the core response is already committed then do nothing more
                 if (coreResponse.isCommitted())
@@ -581,7 +591,16 @@ public class ResourceServlet extends HttpServlet
                     (contentLength < 0 || contentLength > coreRequest.getConnectionMetaData().getHttpConfiguration().getOutputBufferSize()))
                 {
                     // send the content asynchronously
-                    AsyncContext asyncContext = httpServletRequest.isAsyncStarted() ? httpServletRequest.getAsyncContext() : httpServletRequest.startAsync();
+                    AsyncContext asyncContext;
+                    if (httpServletRequest.isAsyncStarted())
+                    {
+                        asyncContext = httpServletRequest.getAsyncContext();
+                    }
+                    else
+                    {
+                        asyncContext = httpServletRequest.startAsync();
+                        asyncContext.setTimeout(0);
+                    }
                     Callback callback = new AsyncContextCallback(asyncContext, httpServletResponse);
                     _resourceService.doGet(coreRequest, coreResponse, callback, content);
                 }
@@ -804,7 +823,7 @@ public class ResourceServlet extends HttpServlet
         protected void writeHttpError(Request coreRequest, Response coreResponse, Callback callback, Throwable cause)
         {
             if (LOG.isDebugEnabled())
-                LOG.debug("writeHttpError(coreRequest={}, coreResponse={}, callback={}, cause={})", coreRequest, coreResponse, callback, cause, cause);
+                LOG.atDebug().setCause(cause).log("writeHttpError(coreRequest={}, coreResponse={}, callback={}, cause={})", coreRequest, coreResponse, callback, cause);
 
             int statusCode = HttpStatus.INTERNAL_SERVER_ERROR_500;
             String reason = null;
@@ -820,7 +839,7 @@ public class ResourceServlet extends HttpServlet
         protected void writeHttpError(Request coreRequest, Response coreResponse, Callback callback, int statusCode, String reason, Throwable cause)
         {
             if (LOG.isDebugEnabled())
-                LOG.debug("writeHttpError(coreRequest={}, coreResponse={}, callback={}, statusCode={}, reason={}, cause={})", coreRequest, coreResponse, callback, statusCode, reason, cause, cause);
+                LOG.atDebug().setCause(cause).log("writeHttpError(coreRequest={}, coreResponse={}, callback={}, statusCode={}, reason={}, cause={})", coreRequest, coreResponse, callback, statusCode, reason, cause);
             HttpServletRequest request = getServletRequest(coreRequest);
             HttpServletResponse response = getServletResponse(coreResponse);
             try
@@ -993,7 +1012,7 @@ public class ResourceServlet extends HttpServlet
             try
             {
                 if (LOG.isDebugEnabled())
-                    LOG.debug("AsyncContextCallback failed {}", _asyncContext, x);
+                    LOG.atDebug().setCause(x).log("AsyncContextCallback failed {}", _asyncContext);
                 // It is known that this callback is only failed if the response is already committed,
                 // thus we can only abort the response here.
                 _response.sendError(-1);
@@ -1007,7 +1026,7 @@ public class ResourceServlet extends HttpServlet
                 _asyncContext.complete();
             }
             if (LOG.isDebugEnabled())
-                LOG.debug("Async get failed", x);
+                LOG.atDebug().setCause(x).log("Async get failed");
         }
     }
 }
